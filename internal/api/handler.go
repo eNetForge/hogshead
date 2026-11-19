@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/enetforge/hogshead/internal/api/s3err"
@@ -61,6 +62,9 @@ type Handler struct {
 	verifier *auth.Verifier
 	limiter  *authLimiter
 	ops      map[Operation]opFunc
+	// access is the per-request record hook. It can be registered while
+	// requests are in flight, so it is read and written atomically.
+	access atomic.Pointer[func(usage.Record)]
 }
 
 // New builds the S3 handler.
@@ -79,6 +83,7 @@ func New(d Deps) *Handler {
 	}
 	h := &Handler{d: d, limiter: newAuthLimiter()}
 	h.ops = h.buildDispatch()
+	h.SetAccess(d.Access)
 	h.verifier = &auth.Verifier{
 		Lookup: func(ctx context.Context, ak string) (string, error) {
 			c, err := d.DB.LookupAccessKey(ctx, ak)
@@ -146,7 +151,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"id", c.id, "op", string(c.op), "method", r.Method, "bucket", c.target.Bucket, "key", c.target.Key,
 		"status", sw.status, "bytes", sw.bytes, "dur", h.d.Now().Sub(c.started).Round(time.Microsecond),
 		"user", c.caller.Name(), "ip", clientIP(r))
-	if h.d.Access != nil {
+	if access := h.access.Load(); access != nil {
 		rec := usage.Record{
 			Time: c.started, ID: c.id, Op: string(c.op), Method: r.Method, Bucket: c.target.Bucket, Key: c.target.Key,
 			Status: sw.status, BytesOut: sw.bytes, Duration: h.d.Now().Sub(c.started).Milliseconds(),
@@ -164,7 +169,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if sw.status >= 400 {
 			rec.ErrorCode, rec.ErrorMessage = c.errCode, c.errMsg
 		}
-		h.d.Access(rec)
+		(*access)(rec)
 	}
 }
 
@@ -340,7 +345,13 @@ func (h *Handler) changed() {
 }
 
 // SetAccess registers the per-request record hook.
-func (h *Handler) SetAccess(fn func(usage.Record)) { h.d.Access = fn }
+func (h *Handler) SetAccess(fn func(usage.Record)) {
+	if fn == nil {
+		h.access.Store(nil)
+		return
+	}
+	h.access.Store(&fn)
+}
 
 // SetSession enables cookie authentication for web UI requests.
 func (h *Handler) SetSession(s SessionAuth) { h.d.Session = s }

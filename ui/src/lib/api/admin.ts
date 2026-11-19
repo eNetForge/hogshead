@@ -180,6 +180,8 @@ export interface ReplicationStatus {
 	lag: number;
 	last_sync?: string;
 	last_error?: string;
+	/** A bucket configuration change the destination refused; objects still flow. */
+	last_warning?: string;
 	pushed: number;
 }
 
@@ -358,7 +360,9 @@ export const admin = {
 			call<User>('PATCH', `/users/${enc(name)}`, req),
 		remove: (name: string) => call<void>('DELETE', `/users/${enc(name)}`),
 		/** Sets a web UI password; '' removes password login. Admins for anyone, users for themselves. */
-		setPassword: (name: string, password: string) => call<User>('PUT', `/users/${enc(name)}/password`, { password })
+		setPassword: (name: string, password: string) => call<User>('PUT', `/users/${enc(name)}/password`, { password }),
+		/** Replaces the session secret: every web UI session on this server is signed out, the caller's included. */
+		logoutAll: () => call<{ rotated: boolean }>('POST', '/sessions/rotate')
 	},
 
 	peers: () => call<Peer[]>('GET', '/peers'),

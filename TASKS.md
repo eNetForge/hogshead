@@ -229,3 +229,6 @@ Legend: `[ ]` todo, `[~]` in progress, `[x]` done, `[-]` dropped.
 - [x] Cellar menu in the UI (create, join from discovered cellars or by address, approve, members, settings); cellar targets hidden from Replication
 - [x] Per-object Object Lock replication (retention, legal hold, tags follow the version)
 - [x] Access log file and hourly usage counters (API, CLI, Usage page, per-bucket card)
+- [x] Object tagging events (`s3:ObjectTagging:Put|Delete`) are emitted
+- [x] A destination that refuses bucket configuration (403) no longer stalls a replication target; warning on the target instead
+- [x] `user logout-all` / `POST /sessions/rotate` / Users page: replace the web UI session secret

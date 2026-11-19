@@ -23,6 +23,9 @@ type fakePusher struct {
 	puts map[string]string
 	dels []string
 	fail bool
+	// denyConfig makes bucket configuration calls answer 403, like a
+	// destination user that may write objects but does not own the bucket.
+	denyConfig bool
 
 	ensured, ensuredVersioned, ensuredLocked int
 	config                                   map[string]string
@@ -92,6 +95,9 @@ func (f *fakePusher) EnsureBucket(_ context.Context, o s3client.BucketOptions) (
 func (f *fakePusher) PutBucketConfig(_ context.Context, sub, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.denyConfig {
+		return &Error{Status: 403, Body: "AccessDenied"}
+	}
 	if f.config == nil {
 		f.config = map[string]string{}
 	}
@@ -101,6 +107,9 @@ func (f *fakePusher) PutBucketConfig(_ context.Context, sub, body string) error 
 func (f *fakePusher) DeleteBucketConfig(_ context.Context, sub string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.denyConfig {
+		return &Error{Status: 403, Body: "AccessDenied"}
+	}
 	if f.config == nil {
 		f.config = map[string]string{}
 	}
@@ -655,5 +664,59 @@ func TestObjectLockReplicates(t *testing.T) {
 	fp.mu.Unlock()
 	if _, has := h["x-amz-object-lock-mode"]; has {
 		t.Fatalf("expired retention forwarded: %v", h)
+	}
+}
+
+func TestDeniedBucketConfigDoesNotStallObjects(t *testing.T) {
+	n := testutil.Start(t)
+	a := &n.Admin
+	ctx := context.Background()
+	fp := &fakePusher{puts: map[string]string{}, denyConfig: true}
+	w := New(Deps{DB: n.Core.DB, Propose: n.Core.ProposeRaw, Chunks: n.Core.Chunks,
+		Log: slog.Default(), NewClient: func(Target) Pusher { return fp }}, time.Hour)
+	n.Must(200, a, "PUT", "/src", nil, nil)
+	setRule := func(cellar bool) {
+		rule := Rule{Targets: []Target{{Name: "dest", Enabled: true, Cellar: cellar, Endpoint: "http://dest:9000", Bucket: "mirror", AccessKey: "a", SecretKey: "s"}}}
+		raw, _ := json.Marshal(rule)
+		if _, err := n.Core.Propose(ctx, &meta.SetSetting{Key: RulePrefix + "src", Value: string(raw)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setRule(false)
+	n.Must(200, a, "PUT", "/src?lifecycle", []byte(`<LifecycleConfiguration><Rule><ID>x</ID><Status>Enabled</Status><Filter></Filter><Expiration><Days>3</Days></Expiration></Rule></LifecycleConfiguration>`), nil)
+	n.Must(200, a, "PUT", "/src/a.txt", []byte("alpha"), nil)
+	if err := w.Pass(ctx); err != nil {
+		t.Fatalf("a refused configuration push must not fail the pass: %v", err)
+	}
+	st := w.Status(ctx)
+	if len(st) != 1 || st[0].Lag != 0 || st[0].LastError != "" || !strings.Contains(st[0].LastWarning, "lifecycle") {
+		t.Fatalf("status: %+v", st)
+	}
+	fp.mu.Lock()
+	if fp.puts["a.txt"] != "alpha||" {
+		t.Fatalf("object behind the refused change was not pushed: %v", fp.puts)
+	}
+	fp.denyConfig = false
+	fp.mu.Unlock()
+
+	// The next configuration change that is accepted clears the warning.
+	n.Must(204, a, "DELETE", "/src?lifecycle", nil, nil)
+	if err := w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st := w.Status(ctx); st[0].LastWarning != "" {
+		t.Fatalf("warning should clear: %+v", st[0])
+	}
+
+	// Cellar members must hold identical configuration, so there a refusal
+	// still stops the target.
+	fp.mu.Lock()
+	fp.denyConfig = true
+	fp.mu.Unlock()
+	setRule(true)
+	n.Must(200, a, "PUT", "/src?lifecycle", []byte(`<LifecycleConfiguration><Rule><ID>x</ID><Status>Enabled</Status><Filter></Filter><Expiration><Days>3</Days></Expiration></Rule></LifecycleConfiguration>`), nil)
+	_ = w.Pass(ctx)
+	if st := w.Status(ctx); st[0].LastError == "" || st[0].Lag == 0 {
+		t.Fatalf("cellar target should stop on a refused configuration push: %+v", st[0])
 	}
 }

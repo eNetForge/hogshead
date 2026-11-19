@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
+	import { goto } from '$app/navigation';
 	import { admin, type AccessKey, type CreatedKey, type User } from '$lib/api/admin';
 	import AdminOnly from '$lib/components/AdminOnly.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -9,7 +11,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
 	import { formatDate } from '$lib/format';
-	import { session } from '$lib/stores/session';
+	import { clearSession, session } from '$lib/stores/session';
 	import { toastError, toastSuccess } from '$lib/stores/toast';
 
 	const ROLES = ['admin', 'read-write', 'read-only'];
@@ -40,6 +42,7 @@
 	let passwordOpen = $state(false);
 	let revokeId = $state<string | null>(null);
 	let revokeOpen = $state(false);
+	let logoutAllOpen = $state(false);
 
 	const parseBuckets = (s: string) => s.split(',').map((b) => b.trim()).filter(Boolean);
 
@@ -151,6 +154,26 @@
 		}
 	}
 
+	// Replacing the session secret signs out every password login on this
+	// server, this one included, so the page reloads to the login screen.
+	async function confirmLogoutAll() {
+		busy = true;
+		try {
+			await admin.users.logoutAll();
+			logoutAllOpen = false;
+			if ($session?.mode === 'cookie') {
+				clearSession();
+				goto(`${base}/login`);
+				return;
+			}
+			toastSuccess('Every web UI session was signed out');
+		} catch (err) {
+			toastError(err);
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function confirmRevoke() {
 		if (!revokeId) return;
 		busy = true;
@@ -177,6 +200,7 @@
 		<h1>Users</h1>
 		<div class="row">
 			<button class="btn btn-sm" type="button" onclick={load} disabled={loading} aria-label="Refresh"><Icon name="refresh" size={14} /></button>
+			<button class="btn btn-sm" type="button" onclick={() => (logoutAllOpen = true)} title="Replace the session secret so every password login to the web UI has to sign in again"><Icon name="logout" size={14} /> Sign everyone out</button>
 			<button class="btn btn-primary btn-sm" type="button" onclick={() => (createOpen = true)}><Icon name="plus" size={14} /> New user</button>
 		</div>
 	</div>
@@ -312,5 +336,6 @@
 		<PasswordDialog bind:open={passwordOpen} user={passwordUser} onsaved={load} />
 	{/if}
 	<ConfirmDialog bind:open={deleteOpen} title="Delete user" message="Delete user “{deleteUser?.name}” and all of their access keys?" {busy} onconfirm={confirmDelete} />
+	<ConfirmDialog bind:open={logoutAllOpen} title="Sign everyone out" message="Sign out every web UI session on this server, including yours if you logged in with a password? Access keys and passwords are not changed." confirmLabel="Sign everyone out" {busy} onconfirm={confirmLogoutAll} />
 	<ConfirmDialog bind:open={revokeOpen} title="Revoke key" message="Revoke access key {revokeId}? Clients using it will stop working immediately." confirmLabel="Revoke" {busy} onconfirm={confirmRevoke} />
 </AdminOnly>

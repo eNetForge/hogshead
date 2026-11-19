@@ -1006,3 +1006,49 @@ func TestBucketNotifications(t *testing.T) {
 		t.Fatal("configuration should be cleared")
 	}
 }
+
+func TestObjectTaggingNotifications(t *testing.T) {
+	n := testutil.Start(t)
+	a := &n.Admin
+	var mu sync.Mutex
+	var events []string
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		events = append(events, string(b))
+		mu.Unlock()
+	}))
+	defer hook.Close()
+	n.Must(200, a, "PUT", "/tagevt", nil, nil)
+	if _, err := n.Core.Propose(context.Background(), &meta.SetSetting{Key: "webhook.ci", Value: hook.URL}); err != nil {
+		t.Fatal(err)
+	}
+	n.Must(200, a, "PUT", "/tagevt/a.txt", []byte("hello"), nil)
+	cfg := `<NotificationConfiguration><QueueConfiguration><Queue>arn:hogshead:webhook:::ci</Queue><Event>s3:ObjectTagging:*</Event></QueueConfiguration></NotificationConfiguration>`
+	n.Must(200, a, "PUT", "/tagevt?notification", []byte(cfg), nil)
+	n.Must(200, a, "PUT", "/tagevt/a.txt?tagging", []byte(`<Tagging><TagSet><Tag><Key>k</Key><Value>v</Value></Tag></TagSet></Tagging>`), nil)
+	n.Must(204, a, "DELETE", "/tagevt/a.txt?tagging", nil, nil)
+	n.Must(404, a, "DELETE", "/tagevt/missing.txt?tagging", nil, nil) // a failed call emits nothing
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		cnt := len(events)
+		mu.Unlock()
+		if cnt >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %v", len(events), events)
+	}
+	joined := strings.Join(events, "\n")
+	for _, want := range []string{"ObjectTagging:Put", "ObjectTagging:Delete", "a.txt", `"size":5`} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("events lack %q: %s", want, joined)
+		}
+	}
+}

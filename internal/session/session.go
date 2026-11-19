@@ -48,6 +48,7 @@ var (
 
 // Manager signs and verifies tokens.
 type Manager struct {
+	mu     sync.RWMutex
 	secret []byte
 	Now    func() time.Time
 	TTL    time.Duration
@@ -59,6 +60,18 @@ func New(secret []byte) (*Manager, error) {
 		return nil, errors.New("session secret must be at least 32 bytes")
 	}
 	return &Manager{secret: append([]byte(nil), secret...), Now: time.Now, TTL: DefaultTTL}, nil
+}
+
+// Rotate replaces the signing secret. Every token issued before the call
+// stops verifying, which signs every session out.
+func (m *Manager) Rotate(secret []byte) error {
+	if len(secret) < 32 {
+		return errors.New("session secret must be at least 32 bytes")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.secret = append([]byte(nil), secret...)
+	return nil
 }
 
 // NewSecret returns a random hex secret suitable for SecretSetting.
@@ -105,7 +118,10 @@ func (m *Manager) Parse(token string) (string, error) {
 }
 
 func (m *Manager) sign(payload string) []byte {
-	h := hmac.New(sha256.New, m.secret)
+	m.mu.RLock()
+	secret := m.secret
+	m.mu.RUnlock()
+	h := hmac.New(sha256.New, secret)
 	h.Write([]byte(payload))
 	return h.Sum(nil)
 }

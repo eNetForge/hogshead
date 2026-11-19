@@ -60,6 +60,10 @@
 							<span class="badge badge-success">in sync</span>
 						{/if}
 						{#if r.last_error}<div class="error small" title={r.last_error}>{r.last_error}</div>{/if}
+						{#if r.last_warning}
+							<span class="badge badge-warn" title={r.last_warning}>warning</span>
+							<div class="muted small" title={r.last_warning}>{r.last_warning}</div>
+						{/if}
 					</td>
 					<td class="num">{formatNumber(r.lag)}</td>
 					<td class="num">{formatNumber(r.pushed)}</td>

@@ -233,3 +233,36 @@ func TestTrustedSocketHandler(t *testing.T) {
 		t.Fatalf("unknown field: %v", err)
 	}
 }
+
+// Status is open to every authenticated caller, so it must never carry
+// secrets that happen to live in server settings.
+func TestStatusDoesNotExposeSecretSettings(t *testing.T) {
+	n, c, _ := setup(t, false)
+	ctx := context.Background()
+	secrets := map[string]string{
+		"ui.session_secret":  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"cellar.key":         `{"access_key":"AK","secret_key":"cellar-secret"}`,
+		"replication.global": `{"targets":[{"name":"x","secret_key":"target-secret"}]}`,
+		"webhook.ci.secret":  "hook-secret",
+		"webhook.ci":         "https://user:pw@example.com/hook",
+		"server.id":          "s-0000000000000000",
+		admin.SettingGCGrace: "24h",
+	}
+	for k, v := range secrets {
+		if _, err := n.Core.Propose(ctx, &meta.SetSetting{Key: k, Value: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Settings[admin.SettingGCGrace] != "24h" {
+		t.Fatalf("tuning settings should stay visible: %v", st.Settings)
+	}
+	for k := range st.Settings {
+		if k != admin.SettingGCGrace {
+			t.Errorf("status exposes setting %s", k)
+		}
+	}
+}

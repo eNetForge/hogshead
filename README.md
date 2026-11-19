@@ -391,7 +391,8 @@ the user (`hogshead user passwd <name>`, the Users page, or
 A password login sets an HttpOnly, SameSite=Strict cookie signed with a
 per-server secret (`ui.session_secret`, created on first start) that the S3
 and admin APIs accept in place of SigV4 for same-origin requests carrying the
-`X-Hogshead-Session` header. Failed logins are rate limited per address. The
+`X-Hogshead-Session` header. `hogshead user logout-all` replaces the secret
+and signs every session out. Failed logins are rate limited per address. The
 cookie is only marked Secure when TLS is on, so put TLS in front of any UI
 reachable beyond a trusted network.
 
@@ -455,6 +456,8 @@ Also settled:
 
 | Topic | Decision |
 |-------|----------|
+| Refused bucket configuration | A 403 from a replication destination on a bucket configuration push is skipped with a warning on the target; objects keep replicating. Between cellar members it stays an error |
+| Session secret | Per server, replaceable on demand (`user logout-all`); replacing it ends every web UI session |
 
 Deferred to 1.x: Object Lock (WORM), event notifications via webhook.
 

@@ -51,6 +51,9 @@ type Deps struct {
 	Extra []Route
 	// Session authenticates web UI requests by cookie; nil disables it.
 	Session SessionAuth
+	// RotateSessions replaces the web UI session secret, signing every
+	// session out; nil when the web UI login is not wired.
+	RotateSessions func(ctx context.Context) error
 }
 
 // SessionAuth resolves a web UI session cookie to a user; (nil, nil) means

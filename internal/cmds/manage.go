@@ -155,6 +155,22 @@ func userCmd() *cli.Command {
 				}
 				return nil
 			}},
+		{Name: "logout-all", Summary: "Sign every web UI session out by replacing the session secret", Usage: "[flags]",
+			Flags: func(fs *flag.FlagSet) { cf = addConnFlags(fs) },
+			Run: func(ctx context.Context, args []string) error {
+				if len(args) != 0 {
+					return errors.New("usage: user logout-all")
+				}
+				c, err := cf.client()
+				if err != nil {
+					return err
+				}
+				if err := c.RotateSessions(ctx); err != nil {
+					return err
+				}
+				fmt.Println("session secret replaced; every web UI session on this server is signed out")
+				return nil
+			}},
 		{Name: "import", Summary: "Create or replace a user wholesale (used by config sync and restores)", Usage: "<name> --role r [--buckets a,b] [--disabled] [--password-hash h]",
 			Flags: func(fs *flag.FlagSet) {
 				cf = addConnFlags(fs)
@@ -761,7 +777,11 @@ func printReplication(w io.Writer, rs []replication.TargetStatus) {
 		if r.Bucket == replication.ConfigBucket {
 			bucket, dest = "(users & settings)", r.Target.Endpoint+"/_admin"
 		}
-		row(w, bucket, name, dest, r.Target.Enabled, r.Lag, r.Pushed, last, r.LastError)
+		note := r.LastError
+		if note == "" && r.LastWarning != "" {
+			note = "warning: " + r.LastWarning
+		}
+		row(w, bucket, name, dest, r.Target.Enabled, r.Lag, r.Pushed, last, note)
 	}
 }
 
@@ -951,6 +971,7 @@ var CLIRoutes = map[string]string{
 	"PUT /settings/{key}":                "setting set",
 	"GET /config":                        "config show",
 	"POST /config/reload":                "config reload",
+	"POST /sessions/rotate":              "user logout-all",
 	"GET /replication":                   "bucket replicate",
 	"GET /buckets/{name}/replication":    "bucket replicate",
 	"PUT /buckets/{name}/replication":    "bucket replicate",

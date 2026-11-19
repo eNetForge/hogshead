@@ -5,11 +5,13 @@ package wire
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/enetforge/hogshead/internal/admin"
@@ -108,7 +110,8 @@ func Build(ctx context.Context, core *server.Core, o Options) (http.Handler, htt
 		DB: core.DB, Propose: core.ProposeRaw, Cfg: core.Cfg, ConfigPath: o.ConfigPath, Session: sessionAuth,
 		ServerID: func() string { return serverID }, Name: name, Peers: disco.Peers,
 		PendingRestart: core.PendingRestart, Version: version.Version, Started: core.Started, Log: core.Log,
-		WorkerStats: func() admin.WorkerStats { return workerStats(workers.Stats()) },
+		WorkerStats:    func() admin.WorkerStats { return workerStats(workers.Stats()) },
+		RotateSessions: func(ctx context.Context) error { return rotateSessions(ctx, core, sessions) },
 	}
 	if o.ConfigPath != "" {
 		deps.Reload = func() error { return core.Reload(o.ConfigPath) }
@@ -234,6 +237,38 @@ func sessionManager(ctx context.Context, core *server.Core) (*session.Manager, e
 	}
 	return session.New(secret)
 }
+
+// rotateSessions stores a fresh session secret and switches the running
+// manager to it, so every existing web UI cookie stops working at once. The
+// setting is written first: if that fails the old secret stays in force and
+// memory never disagrees with what a restart would load.
+//
+// Rotations run one at a time so two callers cannot leave memory on one
+// secret and storage on another. If the write reports an error it may still
+// have landed, so the manager is then set to whatever is stored.
+func rotateSessions(ctx context.Context, core *server.Core, sessions *session.Manager) error {
+	rotateMu.Lock()
+	defer rotateMu.Unlock()
+	hexSecret := session.NewSecret()
+	_, perr := core.Propose(ctx, &meta.SetSetting{Key: session.SecretSetting, Value: hexSecret})
+	stored, err := core.DB.GetSetting(context.WithoutCancel(ctx), session.SecretSetting)
+	if err != nil {
+		return errors.Join(perr, fmt.Errorf("read session secret: %w", err))
+	}
+	secret, err := hex.DecodeString(stored)
+	if err != nil {
+		return errors.Join(perr, fmt.Errorf("session secret: %w", err))
+	}
+	if err := sessions.Rotate(secret); err != nil {
+		return errors.Join(perr, err)
+	}
+	if perr != nil {
+		return fmt.Errorf("store session secret: %w", perr)
+	}
+	return nil
+}
+
+var rotateMu sync.Mutex
 
 // Handlers adapts Build to the cmds handler factory signature.
 func Handlers(configPath string) func(core *server.Core) (http.Handler, http.Handler, error) {

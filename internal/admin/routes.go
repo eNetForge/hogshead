@@ -49,6 +49,7 @@ func (h *Handler) coreRoutes() []Route {
 		{"PUT", "/settings/{key}", "Set a server setting; empty value removes it", true, h.putSetting},
 		{"GET", "/config", "Node-local configuration", true, h.getConfig},
 		{"POST", "/config/reload", "Re-read the node-local configuration file", true, h.reloadConfig},
+		{"POST", "/sessions/rotate", "Replace the web UI session secret, signing every web UI session out", true, h.rotateSessions},
 	}
 }
 
@@ -81,8 +82,14 @@ func (h *Handler) status(c *Call) error {
 	if h.d.WorkerStats != nil {
 		st.Workers = h.d.WorkerStats()
 	}
-	if s, err := h.d.DB.AllSettings(ctx); err == nil {
-		st.Settings = s
+	// Status is open to every authenticated caller, while settings also hold
+	// secrets (session secret, cellar key, replication credentials, webhook
+	// URLs and signing secrets). Only the plain tuning knobs are shown here;
+	// the rest is behind the admin-only settings route.
+	for _, k := range []string{SettingUsageKeep, SettingUploadMaxAge, SettingGCGrace} {
+		if v, err := h.d.DB.GetSetting(ctx, k); err == nil && v != "" {
+			st.Settings[k] = v
+		}
 	}
 	return c.JSON(http.StatusOK, st)
 }
@@ -778,6 +785,20 @@ func (h *Handler) reloadConfig(c *Call) error {
 	}
 	h.audit(c, "config.reload", h.d.ConfigPath, "")
 	return h.getConfig(c)
+}
+
+// rotateSessions replaces the secret that signs web UI session cookies. Every
+// cookie issued so far stops working, the caller's own included; access keys
+// and passwords are untouched.
+func (h *Handler) rotateSessions(c *Call) error {
+	if h.d.RotateSessions == nil {
+		return Errorf(http.StatusBadRequest, "InvalidRequest", "web UI sessions are not enabled on this server")
+	}
+	if err := h.d.RotateSessions(c.Ctx()); err != nil {
+		return err
+	}
+	h.audit(c, "sessions.rotate", "", "")
+	return c.JSON(http.StatusOK, map[string]bool{"rotated": true})
 }
 
 // openapi renders a minimal OpenAPI 3 document from the route table.

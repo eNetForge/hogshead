@@ -432,3 +432,90 @@ func TestSetupRejectsWeakPresetCredentials(t *testing.T) {
 		})
 	}
 }
+
+// A rotation signs every web UI session out, lets people log straight back
+// in, and survives a restart: the new secret is the stored one.
+func TestRotateSessionsSignsEveryoneOut(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "data", "config.toml")
+	listen := freePort(t)
+	t.Setenv("HOGSHEAD_DATA_DIR", filepath.Join(dir, "data"))
+	t.Setenv("HOGSHEAD_LISTEN", listen)
+	t.Setenv("HOGSHEAD_ADMIN_SOCKET", "")
+	t.Setenv("HOGSHEAD_DISCOVERY_ENABLED", "false")
+	t.Setenv("HOGSHEAD_INIT_PASSWORD", "correct horse")
+	base := "http://" + listen
+
+	login := func() *http.Cookie {
+		resp, err := http.Post(base+"/_ui/api/login", "application/json", strings.NewReader(`{"user":"admin","password":"correct horse"}`)) //nolint:noctx
+		if err != nil {
+			return nil
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for _, c := range resp.Cookies() {
+			if c.Value != "" {
+				return c
+			}
+		}
+		return nil
+	}
+	call := func(method, path string, c *http.Cookie) int {
+		req, _ := http.NewRequest(method, base+path, nil) //nolint:noctx
+		req.AddCookie(c)
+		req.Header.Set("X-Hogshead-Session", "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	serve := func() (stop func()) {
+		var out bytes.Buffer
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- cli.Execute(ctx, Root(), []string{"serve", "--init", "--config", cfgPath}, &out) }()
+		return func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatalf("serve: %v %s", err, out.String())
+			}
+		}
+	}
+	waitLogin := func() *http.Cookie {
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if c := login(); c != nil {
+				return c
+			}
+		}
+		t.Fatal("login never succeeded")
+		return nil
+	}
+
+	stop := serve()
+	before := waitLogin()
+	if s := call("GET", "/_ui/api/me", before); s != 200 {
+		t.Fatalf("session before rotation: %d", s)
+	}
+	if s := call("POST", "/_admin/v1/sessions/rotate", before); s != 200 {
+		t.Fatalf("rotate: %d", s)
+	}
+	if s := call("GET", "/_ui/api/me", before); s != 403 {
+		t.Fatalf("old session after rotation: %d, want 403", s)
+	}
+	after := waitLogin()
+	if s := call("GET", "/_ui/api/me", after); s != 200 {
+		t.Fatalf("new session after rotation: %d", s)
+	}
+	stop()
+
+	stop = serve()
+	defer stop()
+	waitLogin()
+	if s := call("GET", "/_ui/api/me", after); s != 200 {
+		t.Fatalf("session issued after the rotation must survive a restart: %d", s)
+	}
+	if s := call("GET", "/_ui/api/me", before); s != 403 {
+		t.Fatalf("pre-rotation session after a restart: %d, want 403", s)
+	}
+}

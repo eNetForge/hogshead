@@ -237,6 +237,12 @@ func (c *Client) ReloadConfig(ctx context.Context) (*admin.ConfigView, error) {
 	return &v, c.do(ctx, "POST", "/config/reload", nil, &v)
 }
 
+// RotateSessions replaces the web UI session secret, signing every web UI
+// session out.
+func (c *Client) RotateSessions(ctx context.Context) error {
+	return c.do(ctx, "POST", "/sessions/rotate", nil, nil)
+}
+
 // OpenAPI fetches the API description.
 func (c *Client) OpenAPI(ctx context.Context) (map[string]any, error) {
 	var v map[string]any

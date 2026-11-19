@@ -733,6 +733,7 @@ func (h *Handler) putObjectTagging(c *reqCtx) error {
 	if vid != "" {
 		versionedHeader(c, vid)
 	}
+	h.emitTagging(c, "s3:ObjectTagging:Put", vid)
 	return c.empty(http.StatusOK)
 }
 
@@ -741,7 +742,20 @@ func (h *Handler) deleteObjectTagging(c *reqCtx) error {
 	if _, err := h.propose(c, &meta.UpdateObjectMeta{Bucket: c.bucket.Name, Key: c.target.Key, VersionID: vid, Remove: []string{metaTagging}}); err != nil {
 		return err
 	}
+	h.emitTagging(c, "s3:ObjectTagging:Delete", vid)
 	return c.empty(http.StatusNoContent)
+}
+
+// emitTagging sends a tagging event for the version whose tags just changed.
+// The event carries the object's size and ETag like the other object events;
+// a version that vanished in the meantime is reported without them.
+func (h *Handler) emitTagging(c *reqCtx, name, versionID string) {
+	var size int64
+	etag, vid := "", versionID
+	if v, err := h.d.DB.GetObject(c.ctx(), c.bucket.Name, c.target.Key, versionID); err == nil {
+		size, etag, vid = v.Size, v.ETag, v.VersionID
+	}
+	h.emit(c, name, c.target.Key, size, etag, vid)
 }
 
 func (h *Handler) getObjectRetention(c *reqCtx) error {

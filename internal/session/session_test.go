@@ -134,3 +134,27 @@ func TestCookiesAndLimiter(t *testing.T) {
 		t.Fatal("reset")
 	}
 }
+
+func TestRotateInvalidatesIssuedTokens(t *testing.T) {
+	m, err := New([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := m.Issue("u-1")
+	if err := m.Rotate([]byte("short")); err == nil {
+		t.Fatal("short secret accepted")
+	}
+	if _, err := m.Parse(old); err != nil {
+		t.Fatalf("a refused rotation must keep the old secret: %v", err)
+	}
+	if err := m.Rotate([]byte("fedcba9876543210fedcba9876543210")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Parse(old); !errors.Is(err, ErrInvalid) {
+		t.Fatal("token issued before the rotation still verifies")
+	}
+	fresh, _ := m.Issue("u-1")
+	if id, err := m.Parse(fresh); err != nil || id != "u-1" {
+		t.Fatalf("token issued after the rotation: %q %v", id, err)
+	}
+}

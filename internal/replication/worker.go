@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -53,7 +54,10 @@ type TargetStatus struct {
 	Lag       int64     `json:"lag"` // entries not yet pushed
 	LastSync  time.Time `json:"last_sync,omitempty"`
 	LastError string    `json:"last_error,omitempty"`
-	Pushed    int64     `json:"pushed"`
+	// LastWarning is a problem that did not stop the target: a bucket
+	// configuration change the destination refused and that was skipped.
+	LastWarning string `json:"last_warning,omitempty"`
+	Pushed      int64  `json:"pushed"`
 }
 
 // RuleStatus is kept as an alias for callers that still use the old name.
@@ -107,9 +111,10 @@ type Worker struct {
 	d        Deps
 	interval time.Duration
 	mu       sync.Mutex
-	status   map[string]*TargetStatus // key: bucket + "/" + target name
-	ensured  map[string]bool          // destination buckets verified this process lifetime
-	recent   map[string]time.Time     // target/version pushed synchronously; replay skips them
+	status   map[string]*TargetStatus   // key: bucket + "/" + target name
+	ensured  map[string]bool            // destination buckets verified this process lifetime
+	refused  map[string]map[string]bool // bucket/target -> kinds of configuration the destination refused
+	recent   map[string]time.Time       // target/version pushed synchronously; replay skips them
 	kick     chan struct{}
 }
 
@@ -130,7 +135,7 @@ func New(d Deps, interval time.Duration) *Worker {
 	if interval == 0 {
 		interval = 10 * time.Second
 	}
-	return &Worker{d: d, interval: interval, status: map[string]*TargetStatus{}, ensured: map[string]bool{}, recent: map[string]time.Time{}, kick: make(chan struct{}, 1)}
+	return &Worker{d: d, interval: interval, status: map[string]*TargetStatus{}, ensured: map[string]bool{}, refused: map[string]map[string]bool{}, recent: map[string]time.Time{}, kick: make(chan struct{}, 1)}
 }
 
 // Trigger asks for a pass soon.
@@ -503,7 +508,7 @@ func (w *Worker) ensureBucket(ctx context.Context, client Pusher, bucket string,
 		// A brand-new destination gets the source's current configuration;
 		// later changes arrive as log entries.
 		for _, kind := range []string{"policy", "cors", "lifecycle", "tagging", "lock", "notification"} {
-			if err := w.pushBucketConfig(ctx, client, t, bucket, kind); err != nil {
+			if err := w.mirrorBucketConfig(ctx, client, t, bucket, kind); err != nil {
 				return fmt.Errorf("destination bucket %s: %w", kind, err)
 			}
 		}
@@ -512,6 +517,71 @@ func (w *Worker) ensureBucket(ctx context.Context, client Pusher, bucket string,
 	w.ensured[key] = true
 	w.mu.Unlock()
 	return nil
+}
+
+// mirrorBucketConfig pushes one kind of bucket configuration and decides what
+// a refusal means. Object data is what a replication target is for, so when
+// the destination answers 403 (its user may write objects but does not own
+// the bucket) the change is skipped and reported as a warning instead of
+// holding up every object behind it. Cellar members are different: they must
+// hold identical configuration, so there the error stands.
+func (w *Worker) mirrorBucketConfig(ctx context.Context, client Pusher, t Target, bucket, kind string) error {
+	err := w.pushBucketConfig(ctx, client, t, bucket, kind)
+	if err != nil && !t.Cellar && accessDenied(err) {
+		w.d.Log.Warn("replication: bucket configuration refused by destination, skipped", "bucket", bucket, "target", t.Name, "kind", kind)
+		w.setRefused(bucket, t.Name, kind, true)
+		return nil
+	}
+	if err == nil && kind != "create" && kind != "delete" {
+		w.setRefused(bucket, t.Name, kind, false)
+	}
+	return err
+}
+
+// accessDenied reports a destination answer that means "this user may not do
+// that": status 403 with the AccessDenied code. Other 403s (a bad signature,
+// a skewed clock) are faults to retry, not permissions to route around.
+func accessDenied(err error) bool {
+	var re *Error
+	return errors.As(err, &re) && re.Status == http.StatusForbidden && strings.Contains(re.Body, "AccessDenied")
+}
+
+// setRefused tracks, per target, which kinds of bucket configuration the
+// destination refused, and keeps the target's warning in step. A kind leaves
+// the list only when a push of that same kind is accepted.
+func (w *Worker) setRefused(bucket, target, kind string, refused bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := bucket + "/" + target
+	kinds := w.refused[key]
+	if refused {
+		if kinds == nil {
+			kinds = map[string]bool{}
+			w.refused[key] = kinds
+		}
+		kinds[kind] = true
+	} else {
+		if !kinds[kind] {
+			return
+		}
+		delete(kinds, kind)
+	}
+	st := w.status[key]
+	if st == nil {
+		st = &TargetStatus{Bucket: bucket}
+		w.status[key] = st
+	}
+	if len(kinds) == 0 {
+		st.LastWarning = ""
+		return
+	}
+	names := make([]string, 0, len(kinds))
+	for k := range kinds {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	st.LastWarning = "bucket configuration not applied (" + strings.Join(names, ", ") + "): the destination refused it with AccessDenied. " +
+		"Give the destination user ownership of the bucket, then change that configuration again or apply it on the destination."
 }
 
 // pushBucketConfig writes one kind of bucket configuration to the target,
@@ -832,7 +902,7 @@ const CellarServiceUser = "cellar"
 func (w *Worker) push(ctx context.Context, client Pusher, t Target, e meta.ReplicationEntry) error {
 	switch e.Op {
 	case meta.ReplicationBucket:
-		return w.pushBucketConfig(ctx, client, t, e.Bucket, e.Key)
+		return w.mirrorBucketConfig(ctx, client, t, e.Bucket, e.Key)
 	case meta.ReplicationUser, meta.ReplicationKey, meta.ReplicationSetting:
 		return w.pushServer(ctx, client, e)
 	case meta.ReplicationMarker:
@@ -1131,6 +1201,8 @@ func (w *Worker) Backfill(ctx context.Context, t Target, configWins bool, progre
 		w.mu.Unlock()
 		if created || configWins {
 			for _, kind := range []string{"versioning", "policy", "cors", "lifecycle", "tagging", "lock", "notification"} {
+				// Backfill serves cellar members, which must take the
+				// configuration as it is, so a refusal is an error here.
 				if err := w.pushBucketConfig(ctx, client, bt, b.Name, kind); err != nil {
 					return fmt.Errorf("%s %s: %w", b.Name, kind, err)
 				}
