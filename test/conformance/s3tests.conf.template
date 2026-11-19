@@ -1,0 +1,65 @@
+# ceph/s3-tests configuration for hogshead.
+# Rendered by run.sh, which fills in the at-sign delimited tokens at run time.
+
+[DEFAULT]
+host = @HOST@
+port = @PORT@
+is_secure = False
+ssl_verify = False
+
+[fixtures]
+bucket prefix = s3tests-{random}-
+iam name prefix = s3-tests-
+iam path prefix = /s3-tests/
+
+[s3 main]
+display_name = @MAIN_NAME@
+user_id = @MAIN_USER_ID@
+email = main@example.com
+# empty: hogshead reports no LocationConstraint (us-east-1 semantics), so the
+# bucket-location test is skipped instead of asserting a region name
+api_name =
+access_key = @MAIN_ACCESS_KEY@
+secret_key = @MAIN_SECRET_KEY@
+# lifecycle expiration tests are excluded; interval kept for completeness
+lc_debug_interval = 10
+
+[s3 alt]
+display_name = @ALT_NAME@
+user_id = @ALT_USER_ID@
+email = alt@example.com
+access_key = @ALT_ACCESS_KEY@
+secret_key = @ALT_SECRET_KEY@
+
+# hogshead has no tenants; a third plain user stands in so that the
+# suite's setup()/teardown() bucket sweep (which uses this client) works.
+[s3 tenant]
+display_name = @TENANT_NAME@
+user_id = @TENANT_USER_ID@
+email = tenant@example.com
+access_key = @TENANT_ACCESS_KEY@
+secret_key = @TENANT_SECRET_KEY@
+tenant = testx
+
+# The sections below are required by the suite's config loader but are only
+# used by IAM/STS tests, which are excluded by marker.
+[iam]
+email = iam@example.com
+user_id = 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+access_key = ABCDEFGHIJKLMNOPQRST
+secret_key = abcdefghijklmnopqrstuvwxyzabcdefghijklmn
+display_name = iamuser
+
+[iam root]
+access_key = AAAAAAAAAAAAAAAAAAaa
+secret_key = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+account_id = RGW11111111111111111
+user_id = RGW11111111111111111
+email = account1@example.com
+
+[iam alt root]
+access_key = BBBBBBBBBBBBBBBBBBbb
+secret_key = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+account_id = RGW22222222222222222
+user_id = RGW22222222222222222
+email = account2@example.com

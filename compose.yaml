@@ -1,0 +1,29 @@
+# hogshead with Docker Compose.
+#
+#   docker compose up -d
+#   docker compose logs hogshead     # the first start prints the admin credentials
+#
+# S3 endpoint and web UI: http://localhost:9000 and http://localhost:9000/_ui/
+
+services:
+  hogshead:
+    image: ghcr.io/enetforge/hogshead:latest
+    # To build from this checkout instead of pulling: comment out `image` and
+    # uncomment the next line.
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      # A name for this server, shown in the web UI and to cellar members.
+      HOGSHEAD_NAME: hogshead
+      # Optional: choose the admin credentials instead of having them generated.
+      # They are read on the first start only; changing them later has no effect.
+      # HOGSHEAD_INIT_ACCESS_KEY: ${HOGSHEAD_ACCESS_KEY}
+      # HOGSHEAD_INIT_SECRET_KEY: ${HOGSHEAD_SECRET_KEY}
+      # HOGSHEAD_INIT_PASSWORD: ${HOGSHEAD_PASSWORD}
+    volumes:
+      - hogshead-data:/data
+
+volumes:
+  hogshead-data:

@@ -1,0 +1,91 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: build ui
+        run: cd ui && npm ci && npm run check && npm run build
+      - name: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - name: test
+        run: go test -race -count=1 -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+      - name: coverage gate
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print substr($3, 1, length($3)-1)}')
+          echo "total coverage: $total%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 80) { print "coverage below 80%"; exit 1 } }'
+      - name: build
+        run: CGO_ENABLED=0 go build -o bin/hogshead ./cmd/hogshead
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hogshead-linux-amd64
+          path: bin/hogshead
+  clients:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install clients
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q rclone
+          python -m venv .venv && .venv/bin/pip install --quiet awscli "botocore[crt]" s3cmd boto3
+          curl -sL https://github.com/restic/restic/releases/download/v0.18.0/restic_0.18.0_linux_amd64.bz2 | bunzip2 > /usr/local/bin/restic || true
+          sudo chmod +x /usr/local/bin/restic || true
+      - name: build
+        run: CGO_ENABLED=0 go build -o bin/hogshead ./cmd/hogshead
+      - name: client matrix
+        run: CLIENTS_VENV=$PWD/.venv/bin ./test/clients/run.sh
+  conformance:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build
+        run: CGO_ENABLED=0 go build -o bin/hogshead ./cmd/hogshead
+      - name: ceph s3-tests allowlist
+        run: ./test/conformance/run.sh
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -t hogshead:ci .
+      - name: first start in a container
+        run: |
+          docker run -d --name hogshead -p 9000:9000 -v hogshead-data:/data hogshead:ci
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:9000/healthz; then break; fi
+            sleep 1
+          done
+          docker logs hogshead
+          docker logs hogshead 2>&1 | grep -q AWS_ACCESS_KEY_ID=
+          docker exec hogshead hogshead bucket create first
+          docker exec hogshead hogshead status

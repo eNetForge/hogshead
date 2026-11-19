@@ -1,0 +1,15 @@
+/hogshead
+/dist/
+/bin/
+/data/
+*.db
+*.db-wal
+*.db-shm
+/ui/node_modules/
+/ui/dist/
+/internal/ui/dist/*
+!/internal/ui/dist/index.html
+/ui/build/
+/ui/.svelte-kit/
+coverage.out
+.env

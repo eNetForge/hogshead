@@ -1,0 +1,16 @@
+.git
+.github
+bin
+dist
+data
+docs
+test
+ui/node_modules
+ui/build
+ui/.svelte-kit
+internal/ui/dist/_app
+coverage.out
+*.db
+*.db-wal
+*.db-shm
+.env

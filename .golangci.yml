@@ -1,0 +1,31 @@
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+  settings:
+    gosec:
+      excludes:
+        - G304 # file paths come from validated config
+        - G703 # taint analysis false positives on validated paths
+        - G705 # chunk bodies are binary, not HTML
+        - G115 # explicit narrowing conversions in checksum code
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx, bodyclose, errorlint, staticcheck]
+formatters:
+  enable:
+    - gofmt
+    - goimports
