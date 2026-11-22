@@ -20,6 +20,11 @@ jobs:
           node-version: 22
       - name: build ui
         run: cd ui && npm ci && npm run build
+      # The UI build rewrites the tracked index.html with fresh asset hashes.
+      # That is the file the binary must embed, so keep it and tell git not
+      # to count it as a change, or the release would stop on a dirty tree.
+      - name: keep the built ui index
+        run: git update-index --skip-worktree internal/ui/dist/index.html
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
